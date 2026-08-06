@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov numpy PyQt6 rdkit
+      - name: Run the shared test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/ -v --cov=periodic_shared --cov-report=term-missing
+
+  vendored-copies:
+    # The plugins are the consumers, so their copies are checked from here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check out the plugins
+        run: |
+          for repo in moleditpy_vasp_input_generator \
+                      moleditpy_quantum_espresso_input_generator \
+                      moleditpy_cp2k_input_generator \
+                      moleditpy_slab_builder; do
+            git clone --depth 1 "https://github.com/HiroYokoyama/$repo.git" "../$repo"
+          done
+      - name: Report which plugins are behind this branch
+        # Informational: a plugin legitimately lags until it is synced and
+        # released, so this must not fail the build.
+        continue-on-error: true
+        run: |
+          python scripts/sync_shared.py \
+            ../moleditpy_vasp_input_generator \
+            ../moleditpy_quantum_espresso_input_generator \
+            ../moleditpy_cp2k_input_generator \
+            ../moleditpy_slab_builder --check
