@@ -34,8 +34,15 @@ _VERSION_RE = re.compile(r'^SHARED_MODULE_VERSION\s*=\s*["\'](.+?)["\']', re.M)
 
 
 def sha256(path: str) -> str:
+    """Hash the file's content with line endings normalised to LF.
+
+    Git rewrites line endings on checkout, so a Windows clone of the same commit
+    holds different bytes from a Linux one.  Hashing the raw bytes made the
+    check pass on Linux and fail on Windows for files nobody had touched.
+    """
     with open(path, "rb") as handle:
-        return hashlib.sha256(handle.read()).hexdigest()
+        content = handle.read().replace(b"\r\n", b"\n")
+    return hashlib.sha256(content).hexdigest()
 
 
 def module_identity(path: str):
