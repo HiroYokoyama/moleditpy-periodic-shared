@@ -8,8 +8,10 @@ Guidance for Claude Code working in this repository.
 periodic MoleditPy plugins share, and the only place their tests live.
 
 Nothing imports this package at runtime. A plugin is installed as a
-self-contained folder and cannot import from another plugin, so each **vendors
-a byte-identical copy** of these files.
+self-contained folder and cannot import from another plugin. Each plugin vendors
+these files via a `_periodic_shared` **git submodule** that points at a specific
+commit of this repository. At test and build time, `scripts/materialize_shared.py`
+inside each plugin copies the submodule's files into the package directory.
 
 ## The workflow, in order
 
@@ -17,16 +19,26 @@ a byte-identical copy** of these files.
 2. `python -m pytest tests/ -v` — everything here must stay green and near 100%.
 3. Bump `SHARED_MODULE_VERSION` **inside the file you changed**. Each module is
    versioned independently of the others and of any plugin.
-4. Commit, then tag that module alone: `cell-model-v0.8.0`, `elements-v0.3.0`,
-   `cell-preview-v0.6.0`, `structure-panel-v0.12.0`.
-5. `python scripts/sync_shared.py ../moleditpy_*` — writes the copies **and**
-   each plugin's `.shared-versions.json` together.
-6. Run every plugin's own suite, then release the plugins.
+4. Commit and push. Tag the changed module if releasing a named version:
+   `cell-model-v0.8.0`, `elements-v0.3.0`, etc.
+5. In each plugin repository that needs the update, advance the submodule pointer:
 
-Never edit a vendored copy inside a plugin. `tests/test_shared_sync.py` there
-compares the file's hash against the manifest and fails if you do — that is the
-point of the manifest, and it replaces the old convention of remembering to
-update a version pin by hand in four places.
+```bash
+cd _periodic_shared
+git pull origin main     # or checkout the specific tag
+cd ..
+git add _periodic_shared
+git commit -m "chore: pull latest moleditpy-periodic-shared"
+python scripts/materialize_shared.py   # refresh local copies
+python -m pytest tests/ -v             # verify the plugin still passes
+git push origin main
+```
+
+6. Release the plugins as usual.
+
+**Never edit a vendored copy inside a plugin.** The materialized files are
+listed in each plugin's `.gitignore` and are overwritten on every
+`materialize_shared.py` run — edits there are silently lost.
 
 ## Modules
 
@@ -42,9 +54,8 @@ those two always travel together. `cell_preview` imports RDKit and drives the
 host's PyVista plotter, and `structure_panel` imports PyQt6 — all inside
 functions where possible, so a plugin's declared dependencies stay honest.
 
-`scripts/sync_shared.py` decides what a plugin takes: `cell_model`, `elements`
-and `cell_preview` always, `structure_panel` only if the plugin already has one
-(the Slab Builder has its own dialog instead).
+The Slab Builder has its own dialog and does not use `structure_panel.py`;
+its `materialize_shared.py` copies only the first three files.
 
 ## Testing
 
