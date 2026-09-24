@@ -348,9 +348,12 @@ def test_vacuum_gap_measures_the_empty_space():
     assert cm.vacuum_gap(cell) == pytest.approx(16.0)
 
 
-def test_vacuum_gap_is_zero_for_a_filled_cell():
+def test_vacuum_gap_of_a_bulk_cell_is_the_layer_spacing():
+    """A layer at 4 A in a 4 A cell is the layer at 0 A, so the widest empty
+    stretch is the 2 A between layers, not zero."""
     cell = _layered_cell(4.0, [0.0, 2.0, 4.0])
-    assert cm.vacuum_gap(cell) == pytest.approx(0.0)
+    assert cm.vacuum_gap(cell) == pytest.approx(2.0)
+    assert not cm.looks_like_slab(cell)
 
 
 def test_vacuum_gap_handles_an_empty_cell():

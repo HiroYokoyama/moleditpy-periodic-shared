@@ -16,13 +16,12 @@ loudly.
 from __future__ import annotations
 
 SHARED_MODULE_NAME = "periodic-cell-model"
-SHARED_MODULE_VERSION = "0.7.0"
+SHARED_MODULE_VERSION = "0.8.0"
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import itertools
 import math
 import re
-import shlex
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -68,6 +67,11 @@ class CellAtom:
     fract: np.ndarray
     cart: np.ndarray
     occupancy: Optional[float] = None
+    #: Index of the MoleditPy atom this site came from, for a cell boxed from
+    #: the open molecule.  Selections number atoms in the molecule, and the
+    #: two numberings part ways once ghost atoms are left out or the cell is
+    #: repeated, so anything mapping a selection onto the cell goes by this.
+    source_index: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,8 @@ class Cell:
     #: Symmetry operations applied to reach this cell; 0 means expansion was
     #: skipped, 1 means none were found.  Anything above 1 came from the CIF.
     symmetry_operations: int = 1
+    #: Ghost and dummy atoms (Bq, H:, *) left out when a molecule was boxed.
+    ghosts_dropped: int = 0
 
     @property
     def volume(self) -> float:
@@ -325,21 +331,50 @@ def parse_cif_number(value: str) -> float:
     return float(cleaned)
 
 
+def _cif_tokens(line: str) -> Tuple[List[str], int]:
+    """Split a CIF line into values; also return where a comment starts.
+
+    In CIF a quote only opens a string at the start of a value and only closes
+    it when whitespace (or the end of the line) follows.  An apostrophe inside
+    a value is an ordinary character, which is how nucleotide and sugar labels
+    such as C1' and O5'' are written; a shell-style lexer reads it as an
+    unterminated string and rejects the whole file.
+    """
+    tokens: List[str] = []
+    index = 0
+    length = len(line)
+    while index < length:
+        char = line[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char == "#":
+            return tokens, index
+        if char in "'\"":
+            end = index + 1
+            while end < length:
+                if line[end] == char and (end + 1 == length or line[end + 1].isspace()):
+                    break
+                end += 1
+            if end < length:
+                tokens.append(line[index + 1 : end])
+                index = end + 1
+                continue
+            # No closing quote: CIF 1.1 treats the rest as a bare value.
+        end = index
+        while end < length and not line[end].isspace():
+            end += 1
+        tokens.append(line[index:end])
+        index = end
+    return tokens, length
+
+
 def _strip_comment(line: str) -> str:
-    quote = None
-    for index, char in enumerate(line):
-        if char in {"'", '"'}:
-            quote = None if quote == char else char
-        elif char == "#" and quote is None:
-            return line[:index]
-    return line
+    return line[: _cif_tokens(line)[1]]
 
 
 def _split_cif_line(line: str) -> List[str]:
-    lexer = shlex.shlex(line, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    return list(lexer)
+    return _cif_tokens(line)[0]
 
 
 def _normalize_tag(tag: str) -> str:
@@ -436,10 +471,51 @@ def _required_float(tags: Dict[str, str], key: str) -> float:
 
 
 def _find_atom_loop(loops):
+    """The loop holding atom coordinates.
+
+    Matching any ``_atom_site.`` header is not enough: the anisotropic
+    displacement loop (``_atom_site_aniso_*``) shares the prefix, and a CIF
+    that lists it first would lose every atom.
+    """
+    fallback = None
     for headers, rows in loops:
-        if any(header.startswith("_atom_site.") for header in headers):
+        if any(header in _FRACT_KEYS or header in _CART_KEYS for header in headers):
             return rows
-    return []
+        if fallback is None and any(
+            header.startswith("_atom_site.") and not header.startswith("_atom_site.aniso")
+            for header in headers
+        ):
+            fallback = rows
+    return fallback or []
+
+
+def _data_blocks(text: str) -> List[str]:
+    """The file split at each ``data_`` line (one entry for a single block)."""
+    blocks: List[List[str]] = [[]]
+    for line in text.splitlines():
+        if line.strip().lower().startswith("data_") and any(
+            part.strip() for part in blocks[-1]
+        ):
+            blocks.append([])
+        blocks[-1].append(line)
+    return ["\n".join(block) for block in blocks]
+
+
+def _structure_block(text: str) -> str:
+    """The first data block that carries both a cell and atom coordinates.
+
+    Tags from every block used to land in one dictionary, so a file holding
+    two structures was read with the second structure's cell and the first
+    structure's atoms, silently.
+    """
+    blocks = _data_blocks(text)
+    if len(blocks) == 1:
+        return text
+    for block in blocks:
+        tags, loops, _ = read_cif_tokens(block)
+        if "_cell_length_a" in tags and _find_atom_loop(loops):
+            return block
+    return text
 
 
 def _atoms_from_loop(rows, lattice: np.ndarray) -> List[CellAtom]:
@@ -489,8 +565,12 @@ def _first_tag(tags: Dict[str, str], keys: Sequence[str]) -> Optional[str]:
 
 
 def parse_cif(text: str, name: str = "CIF", expand: bool = True) -> Cell:
-    """Read a CIF into a :class:`Cell`, expanding the asymmetric unit by default."""
-    tags, loops, data_name = read_cif_tokens(text)
+    """Read a CIF into a :class:`Cell`, expanding the asymmetric unit by default.
+
+    A file with several data blocks is read from the first block that holds a
+    whole structure.
+    """
+    tags, loops, data_name = read_cif_tokens(_structure_block(text))
 
     lengths = (
         _required_float(tags, "_cell_length_a"),
@@ -576,26 +656,23 @@ def make_supercell(cell: Cell, repeats: Sequence[int]) -> Cell:
                 for atom in cell.atoms:
                     fract = (np.asarray(atom.fract, dtype=float) + offset) / scale
                     atoms.append(
-                        CellAtom(
-                            label=atom.label,
-                            element=atom.element,
+                        replace(
+                            atom,
                             fract=fract,
                             cart=fractional_to_cartesian(fract, lattice),
-                            occupancy=atom.occupancy,
                         )
                     )
 
     lengths, angles = lattice_parameters(lattice)
     suffix = "x".join(str(count) for count in counts)
-    return Cell(
+    return replace(
+        cell,
         name=f"{cell.name}_{suffix}",
         lengths=lengths,
         angles=angles,
         lattice=lattice,
         atoms=tuple(atoms),
         space_group=None if any(count > 1 for count in counts) else cell.space_group,
-        source=cell.source,
-        symmetry_operations=cell.symmetry_operations,
     )
 
 
@@ -606,6 +683,8 @@ def cell_from_molecule(
     cubic: bool = False,
     name: str = "molecule",
     labels: Optional[Sequence[str]] = None,
+    source_indices: Optional[Sequence[int]] = None,
+    ghosts_dropped: int = 0,
 ) -> Cell:
     """Wrap a non-periodic molecule in an orthorhombic box with vacuum padding.
 
@@ -640,6 +719,7 @@ def cell_from_molecule(
             fract=shifted[index] / lengths,
             cart=shifted[index].copy(),
             occupancy=1.0,
+            source_index=int(source_indices[index]) if source_indices is not None else index,
         )
         for index in range(len(positions))
     )
@@ -652,6 +732,7 @@ def cell_from_molecule(
         atoms=atoms,
         space_group="P 1",
         source="molecule",
+        ghosts_dropped=int(ghosts_dropped),
     )
 
 
@@ -659,24 +740,19 @@ def cell_with_lattice(cell: Cell, lengths: Sequence[float], angles: Sequence[flo
     """Re-cast a cell onto a user-supplied lattice, keeping fractional positions."""
     lattice = cell_vectors(lengths, angles)
     atoms = tuple(
-        CellAtom(
-            label=atom.label,
-            element=atom.element,
+        replace(
+            atom,
             fract=np.asarray(atom.fract, dtype=float),
             cart=fractional_to_cartesian(atom.fract, lattice),
-            occupancy=atom.occupancy,
         )
         for atom in cell.atoms
     )
-    return Cell(
-        name=cell.name,
+    return replace(
+        cell,
         lengths=tuple(float(value) for value in lengths),
         angles=tuple(float(value) for value in angles),
         lattice=lattice,
         atoms=atoms,
-        space_group=cell.space_group,
-        source=cell.source,
-        symmetry_operations=cell.symmetry_operations,
     )
 
 
@@ -742,11 +818,29 @@ def kpoint_mesh_from_density(
     )
 
 
-def molecule_arrays(mol):
-    """Extract (labels, elements, coords) from an RDKit-like molecule.
+def is_ghost_symbol(symbol: str) -> bool:
+    """True for a ghost-atom label: Bq, El-Bq, or ORCA's El: form."""
+    text = str(symbol or "").strip()
+    upper = text.upper()
+    return upper == "BQ" or upper.endswith("-BQ") or text.endswith(":")
 
-    Duck-typed on purpose: the XYZ Editor's ``custom_symbol`` property wins over
-    the element symbol, and no rdkit import is needed here.
+
+def _is_ghost_or_dummy(atom) -> bool:
+    if atom.HasProp("custom_symbol") and is_ghost_symbol(atom.GetProp("custom_symbol")):
+        return True
+    try:
+        return int(atom.GetAtomicNum()) == 0
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _molecule_sites(mol):
+    """(labels, elements, coords, source indices, ghosts dropped) for a molecule.
+
+    Ghost and dummy atoms are left out.  A plane-wave or Gaussian-plane-wave
+    code has no ghost atom: kept, a NICS "Bq" probe was read as boron (its
+    first letter) and an ORCA "H:" ghost as a real hydrogen, silently turning
+    a probe into an atom in the written input.
     """
     if mol is None:
         raise ValueError("No molecule is loaded.")
@@ -754,8 +848,13 @@ def molecule_arrays(mol):
     labels: List[str] = []
     elements: List[str] = []
     coords: List[List[float]] = []
+    indices: List[int] = []
+    dropped = 0
     for index in range(mol.GetNumAtoms()):
         atom = mol.GetAtomWithIdx(index)
+        if _is_ghost_or_dummy(atom):
+            dropped += 1
+            continue
         symbol = (
             atom.GetProp("custom_symbol")
             if atom.HasProp("custom_symbol")
@@ -765,8 +864,22 @@ def molecule_arrays(mol):
         labels.append(f"{symbol}{index + 1}")
         elements.append(normalize_element(symbol))
         coords.append([float(position.x), float(position.y), float(position.z)])
+        indices.append(index)
     if not coords:
+        if dropped:
+            raise ValueError("The molecule holds only ghost or dummy atoms.")
         raise ValueError("The molecule has no atoms.")
+    return labels, elements, coords, indices, dropped
+
+
+def molecule_arrays(mol):
+    """Extract (labels, elements, coords) from an RDKit-like molecule.
+
+    Duck-typed on purpose: the XYZ Editor's ``custom_symbol`` property wins over
+    the element symbol, and no rdkit import is needed here.  Ghost and dummy
+    atoms are left out (see :func:`_molecule_sites`).
+    """
+    labels, elements, coords, _, _ = _molecule_sites(mol)
     return labels, elements, coords
 
 
@@ -776,9 +889,16 @@ def molecule_to_cell(
     cubic: bool = False,
     name: str = "molecule",
 ) -> Cell:
-    labels, elements, coords = molecule_arrays(mol)
+    labels, elements, coords, indices, dropped = _molecule_sites(mol)
     return cell_from_molecule(
-        elements, coords, padding=padding, cubic=cubic, name=name, labels=labels
+        elements,
+        coords,
+        padding=padding,
+        cubic=cubic,
+        name=name,
+        labels=labels,
+        source_indices=indices,
+        ghosts_dropped=dropped,
     )
 
 
@@ -921,8 +1041,20 @@ def vacuum_gap(cell: Cell) -> float:
     normal = normal / norm
 
     spacing = abs(float(np.dot(lattice[2], normal)))
-    heights = [float(np.dot(np.asarray(atom.cart, dtype=float), normal)) for atom in cell.atoms]
-    return max(0.0, spacing - (max(heights) - min(heights)))
+    if spacing < 1e-12:
+        return 0.0
+    # Heights are periodic in the spacing, so the vacuum is the widest empty
+    # stretch around that circle.  Taking max - min instead read a slab that
+    # straddles c = 0 (atoms at 0.95 and 0.05) as filling the whole cell.
+    heights = np.sort(
+        np.mod(
+            [float(np.dot(np.asarray(atom.cart, dtype=float), normal)) for atom in cell.atoms],
+            spacing,
+        )
+    )
+    gaps = np.diff(heights)
+    wrap = spacing - float(heights[-1] - heights[0])
+    return max(0.0, float(max(gaps.max() if len(gaps) else 0.0, wrap)))
 
 
 def translation_symmetries(
@@ -1109,13 +1241,7 @@ def primitive_cell(cell: Cell, tolerance: float = 0.1, reduce_basis: bool = True
         ):
             continue
         kept.append(
-            CellAtom(
-                label=atom.label,
-                element=atom.element,
-                fract=fract,
-                cart=fractional_to_cartesian(fract, lattice),
-                occupancy=atom.occupancy,
-            )
+            replace(atom, fract=fract, cart=fractional_to_cartesian(fract, lattice))
         )
 
     expected = len(cell.atoms) * abs(float(np.linalg.det(matrix)))
@@ -1125,15 +1251,8 @@ def primitive_cell(cell: Cell, tolerance: float = 0.1, reduce_basis: bool = True
         return cell
 
     lengths, angles = lattice_parameters(lattice)
-    return Cell(
-        name=cell.name,
-        lengths=lengths,
-        angles=angles,
-        lattice=lattice,
-        atoms=tuple(kept),
-        space_group=cell.space_group,
-        source=cell.source,
-        symmetry_operations=cell.symmetry_operations,
+    return replace(
+        cell, lengths=lengths, angles=angles, lattice=lattice, atoms=tuple(kept)
     )
 
 
@@ -1250,6 +1369,12 @@ def structure_warnings(cell: Cell) -> List[str]:
             f"{len(contacts)} pair(s) of atoms lie closer than 0.6 A, the closest being "
             f"{cell.atoms[first].label} and {cell.atoms[second].label} at {distance:.3f} A. "
             "That is usually a disordered CIF or a cell that was expanded twice."
+        )
+
+    if cell.ghosts_dropped:
+        messages.append(
+            f"{cell.ghosts_dropped} ghost or dummy atom(s) (Bq, H:, *) in the molecule were "
+            "left out: this code has no ghost atoms, and writing them would add real atoms."
         )
 
     unknown = sorted({atom.element for atom in cell.atoms if not is_element(atom.element)})
