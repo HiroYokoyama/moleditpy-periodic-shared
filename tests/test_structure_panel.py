@@ -1,6 +1,7 @@
 import os
 import sys
 import types
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -19,9 +20,9 @@ from test_cell_model import CUBIC_CIF, _FakeMol  # noqa: E402
 @pytest.mark.parametrize(
     "module,name,version",
     [
-        (cm, "periodic-cell-model", "0.8.0"),
-        (sp, "periodic-structure-panel", "0.12.0"),
-        (__import__("periodic_shared.elements", fromlist=["x"]), "periodic-elements", "0.2.0"),
+        (cm, "periodic-cell-model", "1.0.0"),
+        (sp, "periodic-structure-panel", "1.0.0"),
+        (__import__("periodic_shared.elements", fromlist=["x"]), "periodic-elements", "1.0.0"),
     ],
 )
 def test_shared_module_identity(module, name, version):
@@ -426,6 +427,49 @@ def test_auto_preview_stays_silent_when_the_viewer_is_missing(preview_panel):
     panel, _ = preview_panel
     panel.context = None
     panel.refresh_summary(panel.build_cell())
+
+
+def test_auto_preview_tracks_coordinates_and_lattice(preview_panel, monkeypatch):
+    panel, _ = preview_panel
+    calls = []
+    monkeypatch.setattr(sp.cell_preview, "show_cell", lambda *a, **k: calls.append(a[1]) or [])
+    cell = panel.build_cell()
+    panel.auto_preview(cell)
+    changed = replace(cell, atoms=(replace(cell.atoms[0], cart=cell.atoms[0].cart + .1),) + cell.atoms[1:])
+    panel.auto_preview(changed)
+    lattice = changed.lattice.copy()
+    lattice[1, 0] += .1
+    panel.auto_preview(replace(changed, lattice=lattice))
+    assert len(calls) == 3
+
+
+def test_failed_auto_preview_can_retry_and_clear_allows_redraw(preview_panel, monkeypatch):
+    panel, _ = preview_panel
+    calls = []
+
+    def show(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("viewer not ready")
+        return []
+
+    monkeypatch.setattr(sp.cell_preview, "show_cell", show)
+    cell = panel.build_cell()
+    panel.auto_preview(cell)
+    panel.auto_preview(cell)
+    panel.auto_preview(cell)
+    assert len(calls) == 2
+    panel.clear_3d_preview()
+    panel.auto_preview(cell)
+    assert len(calls) == 3
+
+
+def test_per_axis_padding_ignores_disabled_cubic_choice(panel):
+    panel.cubic_check.setChecked(True)
+    panel.per_axis_check.setChecked(True)
+    for spin, value in zip(panel.axis_padding_spins, [2, 3, 4]):
+        spin.setValue(value)
+    assert len(set(panel.build_cell().lengths)) > 1
 
 
 # -- drag and drop ----------------------------------------------------------

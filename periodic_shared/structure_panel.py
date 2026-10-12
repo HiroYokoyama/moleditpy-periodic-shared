@@ -5,18 +5,18 @@ Builds a :class:`cell_model.Cell` from the molecule currently open in MoleditPy
 optionally expanded to a supercell.
 
 SHARED FILE.  A byte-identical copy lives in every periodic input generator
-plugin (VASP / Quantum ESPRESSO / CP2K).  Bump ``SHARED_MODULE_VERSION`` on any
-change and copy the file to the other plugins; each plugin's test suite pins the
-version it expects, so a stale copy fails loudly.
+plugin (VASP / Quantum ESPRESSO / CP2K). All modules share the repository
+version. Update the canonical repository, then materialize each pinned copy.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from html import escape
 
 SHARED_MODULE_NAME = "periodic-structure-panel"
-SHARED_MODULE_VERSION = "0.12.0"
+SHARED_MODULE_VERSION = "1.0.0"
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -41,6 +41,7 @@ from . import cell_preview
 from .cell_model import (
     Cell,
     cell_from_viewer_structure,
+    formula,
     make_supercell,
     molecule_to_cell,
     parse_cif_file,
@@ -339,7 +340,7 @@ class StructurePanel(QWidget):
             cell = molecule_to_cell(
                 mol,
                 padding=self.padding(),
-                cubic=self.cubic_check.isChecked(),
+                cubic=self.cubic_check.isChecked() and not self.per_axis_check.isChecked(),
             )
         if self.primitive_check.isChecked():
             # Reduce first: a supercell of the primitive cell is what the user
@@ -349,13 +350,11 @@ class StructurePanel(QWidget):
 
     def refresh_summary(self, cell=None, error: str = "") -> None:
         if error:
-            self.summary_label.setText(f"<b>{error}</b>")
+            self.summary_label.setText(f"<b>{escape(error)}</b>")
             return
         if cell is None:
             self.summary_label.setText("No structure yet.")
             return
-        from .cell_model import formula
-
         # Every dialog calls this after a successful build, which makes it the
         # one place that sees a new structure arrive.
         self.auto_preview(cell)
@@ -389,7 +388,9 @@ class StructurePanel(QWidget):
         if molecule is None:
             return None
         try:
-            if molecule.GetNumAtoms() != len(cell.atoms):
+            indices = [atom.source_index for atom in cell.atoms]
+            if not all(isinstance(index, int) and 0 <= index < molecule.GetNumAtoms()
+                       for index in indices) or len(set(indices)) != len(indices):
                 return None
         except AttributeError:
             return None
@@ -461,22 +462,25 @@ class StructurePanel(QWidget):
             return
         # A molecule wrapped in a vacuum box is shown too: its boundary is
         # exactly what the padding settings are there to control.
-        key = (cell.name, cell.source, len(cell.atoms),
-               tuple(round(v, 6) for v in cell.lengths),
+        key = (cell.name, cell.source,
+               tuple(float(v) for row in cell.lattice for v in row),
+               tuple((atom.element, atom.occupancy, tuple(float(v) for v in atom.cart))
+                     for atom in cell.atoms),
                self.bond_choice())
         if key == self._auto_previewed_key:
             return
-        self._auto_previewed_key = key
         try:
             self._preview_actors = cell_preview.show_cell(
                 self.context, cell, self._preview_actors,
                 show_bonds=self.bond_choice(), template=self.source_template(cell),
             )
+            self._auto_previewed_key = key
         except (ValueError, OSError, AttributeError, ImportError, RuntimeError) as exc:
             logging.debug("Automatic 3D preview skipped: %s", exc)
 
     def clear_3d_preview(self) -> None:
         """Remove the cell box.  Safe to call when nothing was drawn."""
+        self._auto_previewed_key = None
         self._preview_actors = cell_preview.clear_cell_box(
             self.context, self._preview_actors
         )

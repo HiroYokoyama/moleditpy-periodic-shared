@@ -4,16 +4,15 @@ Masses are IUPAC 2021 standard atomic weights (conventional values for elements
 with no stable isotope, i.e. the longest-lived isotope's mass number).
 
 SHARED FILE.  A byte-identical copy lives in every periodic plugin (VASP /
-Quantum ESPRESSO / CP2K input generators and the Slab Builder).  Bump
-``SHARED_MODULE_VERSION`` on any change and copy the file to the other plugins;
-each plugin's test suite pins the version it expects, so a stale copy fails
-loudly.
+Quantum ESPRESSO / CP2K input generators and the Slab Builder). All modules
+share the repository version. Update them in the canonical repository, then
+materialize them from each plugin's pinned submodule.
 """
 
 from __future__ import annotations
 
 SHARED_MODULE_NAME = "periodic-elements"
-SHARED_MODULE_VERSION = "0.2.0"
+SHARED_MODULE_VERSION = "1.0.0"
 
 from typing import Dict, List, Optional
 

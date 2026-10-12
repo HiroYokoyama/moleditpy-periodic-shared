@@ -10,16 +10,15 @@ the host, so importing this module needs nothing beyond numpy and the plugin
 keeps ``PLUGIN_DEPENDENCIES = ["numpy"]``.
 
 SHARED FILE.  A byte-identical copy lives in every periodic plugin (VASP /
-Quantum ESPRESSO / CP2K input generators and the Slab Builder).  Bump
-``SHARED_MODULE_VERSION`` on any change and copy the file to the other plugins;
-each plugin's test suite pins the version it expects, so a stale copy fails
-loudly.
+Quantum ESPRESSO / CP2K input generators and the Slab Builder). All modules
+share the repository version. Update them in the canonical repository, then
+materialize them from each plugin's pinned submodule.
 """
 
 from __future__ import annotations
 
 SHARED_MODULE_NAME = "periodic-cell-preview"
-SHARED_MODULE_VERSION = "0.6.0"
+SHARED_MODULE_VERSION = "1.0.0"
 
 import logging
 from typing import List, Optional, Sequence
@@ -124,7 +123,8 @@ def build_molecule(cell, bonds: Optional[Sequence] = None, template=None):
     Boxing a molecule only moves it, so the original is reused with its
     coordinates replaced; rebuilding it from scratch would hand the viewer
     single bonds and lose the double bonds, aromaticity and charges the user
-    drew.  It is ignored unless the atom count still matches.
+    drew. Source indices allow ghost atoms to be omitted without losing the
+    remaining bonds. A mismatched or repeated mapping is ignored.
     """
     from rdkit import Chem
     from rdkit.Geometry import Point3D
@@ -133,12 +133,27 @@ def build_molecule(cell, bonds: Optional[Sequence] = None, template=None):
 
     if template is not None:
         try:
-            if template.GetNumAtoms() == len(atoms):
-                moved = Chem.Mol(template)
-                conformer = moved.GetConformer()
-                for index, atom in enumerate(atoms):
-                    x, y, z = (float(value) for value in atom.cart)
-                    conformer.SetAtomPosition(index, Point3D(x, y, z))
+            indices = [atom.source_index for atom in atoms]
+            if all(index is None for index in indices) and template.GetNumAtoms() == len(atoms):
+                indices = list(range(len(atoms)))
+            valid = (all(isinstance(index, int) and 0 <= index < template.GetNumAtoms()
+                         for index in indices) and len(set(indices)) == len(indices))
+            if valid and all(template.GetAtomWithIdx(index).GetSymbol() == atom.element
+                             for index, atom in zip(indices, atoms)):
+                editable = Chem.RWMol(template)
+                for index in reversed(range(template.GetNumAtoms())):
+                    if index not in indices:
+                        editable.RemoveAtom(index)
+                moved = Chem.RenumberAtoms(editable.GetMol(),
+                                          [sorted(indices).index(index) for index in indices])
+                if not moved.GetNumConformers():
+                    moved.AddConformer(Chem.Conformer(len(atoms)))
+                for conformer in moved.GetConformers():
+                    for index, atom in enumerate(atoms):
+                        x, y, z = (float(value) for value in atom.cart)
+                        conformer.SetAtomPosition(index, Point3D(x, y, z))
+                moved.UpdatePropertyCache(strict=False)
+                Chem.FastFindRings(moved)
                 return moved
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             # TypeError covers Boost.Python.ArgumentError: a host may hand over

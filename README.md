@@ -23,35 +23,23 @@ directory. It cannot import from another plugin, so **every plugin carries a
 byte-identical copy** of the modules above. This repository is where they are
 edited and tested; the copies are written by a script and verified by a hash.
 
-Publishing to PyPI and depending on it was the obvious alternative and was
-rejected deliberately: two installed plugins could then resolve to different
-versions of the same module inside one running app, silently. Copying makes
-that impossible.
+## Version and release workflow
 
-## Changing a shared module
+All shared modules use one repository version, starting at **1.0.0**.
+Keep `VERSION`, `periodic_shared.__version__`, and every
+`SHARED_MODULE_VERSION` identical. Releases use `v1.0.0` style tags and
+include every module in one archive.
 
-```bash
-# 1. edit the module here, and its tests
-python -m pytest tests/ -v
+1. Edit the canonical modules and their tests; run `python -m pytest tests/ -v`.
+2. Bump the repository version and all module version declarations together.
+3. Commit, push main, and wait for CI before pushing the `v<version>` tag.
+4. In each of the four plugins, advance `_periodic_shared` to that release
+   commit and run `python scripts/materialize_shared.py`.
+5. Run each plugin's tests, bump its minor version, push main, wait for CI,
+   then push its own `v<version>` release tag.
 
-# 2. bump SHARED_MODULE_VERSION inside the file you changed
-#    (each module is versioned on its own, independently of any plugin)
-
-# 3. commit, then tag that module's release
-git tag cell-model-v0.8.0 && git push origin cell-model-v0.8.0
-
-# 4. copy it into every plugin and update their manifests
-python scripts/sync_shared.py \
-    ../moleditpy_vasp_input_generator \
-    ../moleditpy_quantum_espresso_input_generator \
-    ../moleditpy_cp2k_input_generator \
-    ../moleditpy_slab_builder
-
-# 5. run each plugin's own suite, then release the plugins as usual
-```
-
-Tags are per module — `cell-model-v0.8.0`, `cell-preview-v0.6.0` — so each has
-its own history and release notes rather than sharing one version number.
+Never edit materialized copies directly. The submodule pins the shared commit
+and materialization records the module versions and hashes.
 
 ## Checking without changing anything
 
@@ -60,7 +48,7 @@ python scripts/sync_shared.py ../moleditpy_slab_builder --check
 ```
 
 Exits non-zero and names the file if a plugin's copy has drifted. Each plugin
-also runs `tests/test_shared_sync.py`, which compares its vendored files
+also runs `tests/test_shared_materialized.py`, which compares its vendored files
 against the `.shared-versions.json` written by the sync — so a copy edited by
 hand in a plugin fails that plugin's own CI.
 

@@ -7,7 +7,9 @@ byte-identical copy of the files here — see ``scripts/sync_shared.py``.
 
 from __future__ import annotations
 
-#: module name -> the version its file declares, kept in step by the tests.
+__version__ = "1.0.0"
+
+#: Modules released together under the repository version.
 MODULES = (
     "cell_model",
     "elements",

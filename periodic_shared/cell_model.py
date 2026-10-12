@@ -7,18 +7,19 @@ differences: symmetry operations are parsed from the CIF's own
 crystallographic metadata the viewer carries for display is dropped.
 
 SHARED FILE.  A byte-identical copy lives in every periodic plugin (VASP /
-Quantum ESPRESSO / CP2K input generators and the Slab Builder).  Bump
-``SHARED_MODULE_VERSION`` on any change and copy the file to the other plugins;
-each plugin's test suite pins the version it expects, so a stale copy fails
-loudly.
+Quantum ESPRESSO / CP2K input generators and the Slab Builder). All modules
+share the repository version. Update them in the canonical repository, then
+materialize them from each plugin's pinned submodule.
 """
 
 from __future__ import annotations
 
 SHARED_MODULE_NAME = "periodic-cell-model"
-SHARED_MODULE_VERSION = "0.8.0"
+SHARED_MODULE_VERSION = "1.0.0"
 
 from dataclasses import dataclass, replace
+from collections import Counter
+from functools import lru_cache
 import itertools
 import math
 import re
@@ -35,8 +36,6 @@ _KNOWN_ELEMENTS = frozenset(_ELEMENT_SYMBOLS)
 # Two symmetry images closer than this (Angstrom) are the same site.
 _DUPLICATE_TOL_SQ = 0.0025
 
-# The minimum image of a pair is always among the 27 nearest lattice translations.
-_NEIGHBOUR_SHIFTS = np.array(list(itertools.product((-1, 0, 1), repeat=3)), dtype=float)
 
 _UNCERTAINTY_RE = re.compile(
     r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)(?:\(\d+\))?$"
@@ -108,6 +107,10 @@ def cell_vectors(lengths: Sequence[float], angles_deg: Sequence[float]) -> np.nd
     a_len, b_len, c_len = (float(value) for value in lengths)
     alpha, beta, gamma = [math.radians(float(angle)) for angle in angles_deg]
 
+    if not all(math.isfinite(value) for value in (a_len, b_len, c_len, alpha, beta, gamma)):
+        raise ValueError("Invalid cell: lengths and angles must be finite.")
+    if not all(0 < angle < math.pi for angle in (alpha, beta, gamma)):
+        raise ValueError("Invalid cell: angles must be between 0 and 180 degrees.")
     if min(a_len, b_len, c_len) <= 0.0:
         raise ValueError("Invalid cell: lengths must be positive.")
 
@@ -269,10 +272,7 @@ def apply_symmetry(
 
             duplicate = False
             for previous in seen:
-                delta = fract - previous
-                delta -= np.round(delta)
-                offset = delta @ lattice
-                if float(offset @ offset) < _DUPLICATE_TOL_SQ:
+                if minimum_image_distance(fract, previous, lattice) ** 2 < _DUPLICATE_TOL_SQ:
                     duplicate = True
                     break
             if duplicate:
@@ -641,7 +641,14 @@ def parse_cif_file(path: str, expand: bool = True) -> Cell:
 
 
 def make_supercell(cell: Cell, repeats: Sequence[int]) -> Cell:
-    counts = [max(1, int(value)) for value in repeats]
+    if len(repeats) != 3 or any(
+        not math.isfinite(float(value)) or float(value) < 1 or int(value) != float(value)
+        for value in repeats
+    ):
+        raise ValueError("Supercell repeats must be three positive integers.")
+    counts = [int(value) for value in repeats]
+    if math.prod(counts) * len(cell.atoms) > 100_000:
+        raise ValueError("Supercell exceeds the 100,000 atom limit; reduce the repeats.")
     if counts == [1, 1, 1]:
         return cell
 
@@ -696,10 +703,17 @@ def cell_from_molecule(
         raise ValueError("Molecule coordinates must be a non-empty (N, 3) array.")
     if len(elements) != len(positions):
         raise ValueError("Element and coordinate counts differ.")
+    if not np.isfinite(positions).all():
+        raise ValueError("Molecule coordinates must be finite.")
+    if any(values is not None and len(values) != len(positions)
+           for values in (labels, source_indices)):
+        raise ValueError("Site metadata and coordinate counts differ.")
 
     pads = np.full(3, float(padding), dtype=float) if np.isscalar(padding) else np.asarray(padding, dtype=float)
     if pads.shape != (3,):
         raise ValueError("padding must be a number or three numbers.")
+    if not np.isfinite(pads).all():
+        raise ValueError("padding must be finite.")
     pads = np.maximum(pads, 0.0)
     extent = positions.max(axis=0) - positions.min(axis=0)
     lengths = extent + 2.0 * pads
@@ -1079,17 +1093,36 @@ def translation_symmetries(
     occupancies = [atom.occupancy for atom in atoms]
 
     def maps_onto_itself(shift: np.ndarray) -> bool:
+        neighbours = []
         for index in range(count):
             target = fract[index] + shift
+            matches = []
             for other in range(count):
                 if elements[other] != elements[index]:
                     continue
                 if occupancies[other] != occupancies[index]:
                     continue
                 if minimum_image_distance(target, fract[other], lattice) < tolerance:
-                    break
-            else:
+                    matches.append(other)
+            if not matches:
                 return False
+            neighbours.append(matches)
+        # Every site must have a distinct image: presence alone loses repeated
+        # sites and can turn an unequal population into a false translation.
+        owners = {}
+
+        def assign(index, visited):
+            for other in neighbours[index]:
+                if other in visited:
+                    continue
+                visited.add(other)
+                if other not in owners or assign(owners[other], visited):
+                    owners[other] = index
+                    return True
+            return False
+
+        if not all(assign(index, set()) for index in range(count)):
+            return False
         return True
 
     # A translation must carry atom 0 onto some atom of the same element, so
@@ -1139,7 +1172,7 @@ def primitive_transformation(cell: Cell, tolerance: float = 0.1) -> Optional[np.
                 inverse = np.linalg.inv(matrix)
                 if not all(
                     np.allclose(np.round(shift @ inverse), shift @ inverse, atol=1e-4)
-                    for shift in translations
+                    for shift in candidates
                 ):
                     continue
                 best, best_volume = matrix, volume
@@ -1233,10 +1266,13 @@ def primitive_cell(cell: Cell, tolerance: float = 0.1, reduce_basis: bool = True
         lattice, _ = lll_reduce(lattice)
 
     kept: List[CellAtom] = []
+    inverse = np.linalg.inv(lattice)
     for atom in cell.atoms:
-        fract = wrap_fractional(np.asarray(atom.cart, dtype=float) @ np.linalg.inv(lattice))
+        fract = wrap_fractional(np.asarray(atom.cart, dtype=float) @ inverse)
         if any(
-            minimum_image_distance(fract, previous.fract, lattice) < tolerance
+            atom.element == previous.element
+            and atom.occupancy == previous.occupancy
+            and minimum_image_distance(fract, previous.fract, lattice) < tolerance
             for previous in kept
         ):
             continue
@@ -1249,6 +1285,11 @@ def primitive_cell(cell: Cell, tolerance: float = 0.1, reduce_basis: bool = True
         # The reduction did not divide the structure evenly, so it was not a
         # true translational symmetry — keep the cell we were given.
         return cell
+    factor = abs(float(np.linalg.det(matrix)))
+    original = Counter((atom.element, atom.occupancy) for atom in cell.atoms)
+    reduced = Counter((atom.element, atom.occupancy) for atom in kept)
+    if any(abs(reduced[key] - number * factor) > 1e-6 for key, number in original.items()):
+        return cell
 
     lengths, angles = lattice_parameters(lattice)
     return replace(
@@ -1256,12 +1297,56 @@ def primitive_cell(cell: Cell, tolerance: float = 0.1, reduce_basis: bool = True
     )
 
 
+@lru_cache(maxsize=128)
+def _image_basis(entries):
+    lattice = np.asarray(entries, dtype=float).reshape(3, 3)
+    if not np.isfinite(lattice).all() or np.linalg.matrix_rank(lattice) != 3:
+        raise ValueError("Minimum-image distances require a finite, nonsingular lattice.")
+    # Reducing the basis keeps the exact integer search small for skew cells.
+    reduced, _ = lll_reduce(lattice)
+    _, triangular = np.linalg.qr(reduced.T)
+    return reduced, np.linalg.inv(reduced), triangular
+
+
+def _minimum_image_squared(delta, lattice, basis):
+    reduced, inverse, triangular = basis
+    fraction = (delta @ lattice) @ inverse
+    fraction -= np.round(fraction)
+    target = triangular @ fraction
+    offset = fraction @ reduced
+    best = float(offset @ offset)
+    integers = np.zeros(3)
+
+    def search(level, partial):
+        nonlocal best
+        if level < 0:
+            best = min(best, partial)
+            return
+        remaining = best - partial
+        if remaining <= 0:
+            return
+        residual = target[level] - triangular[level, level + 1:] @ integers[level + 1:]
+        center = residual / triangular[level, level]
+        radius = math.sqrt(remaining) / abs(triangular[level, level])
+        for integer in range(math.ceil(center - radius), math.floor(center + radius) + 1):
+            integers[level] = integer
+            error = residual - triangular[level, level] * integer
+            search(level - 1, partial + error * error)
+
+    search(2, 0.0)
+    return best
+
+
 def minimum_image_distance(fract_a, fract_b, lattice) -> float:
-    """Shortest distance between two fractional sites across periodic images."""
+    """Shortest distance across all periodic images, including unreduced cells."""
     delta = np.asarray(fract_a, dtype=float) - np.asarray(fract_b, dtype=float)
-    delta -= np.round(delta)
-    offsets = (delta + _NEIGHBOUR_SHIFTS) @ np.asarray(lattice, dtype=float)
-    return float(np.sqrt(np.min(np.einsum("ij,ij->i", offsets, offsets))))
+    if delta.shape != (3,) or not np.isfinite(delta).all():
+        raise ValueError("Fractional sites must contain three finite coordinates.")
+    lattice = np.asarray(lattice, dtype=float)
+    if lattice.shape != (3, 3):
+        raise ValueError("The lattice must be a 3 by 3 matrix.")
+    basis = _image_basis(tuple(lattice.flat))
+    return math.sqrt(_minimum_image_squared(delta, lattice, basis))
 
 
 def close_contacts(
@@ -1285,11 +1370,8 @@ def close_contacts(
     delta = fract[rows] - fract[columns]
     delta -= np.round(delta)
 
-    best = None
-    for shift in _NEIGHBOUR_SHIFTS:
-        offsets = (delta + shift) @ lattice
-        squared = np.einsum("ij,ij->i", offsets, offsets)
-        best = squared if best is None else np.minimum(best, squared)
+    basis = _image_basis(tuple(lattice.flat))
+    best = np.array([_minimum_image_squared(pair, lattice, basis) for pair in delta])
 
     hits = np.nonzero(best < float(tolerance) ** 2)[0]
     contacts = [
