@@ -7,7 +7,7 @@ byte-identical copy of the files here — see ``scripts/sync_shared.py``.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 #: Modules released together under the repository version.
 MODULES = (

@@ -14,7 +14,7 @@ from periodic_shared import cell_preview as cp  # noqa: E402
 
 def test_shared_module_identity():
     assert cp.SHARED_MODULE_NAME == "periodic-cell-preview"
-    assert cp.SHARED_MODULE_VERSION == "1.0.0"
+    assert cp.SHARED_MODULE_VERSION == "1.1.0"
 
 
 class FakePlotter:

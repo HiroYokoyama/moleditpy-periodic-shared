@@ -15,7 +15,7 @@ materialize them from each plugin's pinned submodule.
 from __future__ import annotations
 
 SHARED_MODULE_NAME = "periodic-cell-model"
-SHARED_MODULE_VERSION = "1.0.0"
+SHARED_MODULE_VERSION = "1.1.0"
 
 from dataclasses import dataclass, replace
 from collections import Counter
