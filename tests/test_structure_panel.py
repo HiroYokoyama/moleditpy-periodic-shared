@@ -20,9 +20,9 @@ from test_cell_model import CUBIC_CIF, _FakeMol  # noqa: E402
 @pytest.mark.parametrize(
     "module,name,version",
     [
-        (cm, "periodic-cell-model", "1.0.0"),
-        (sp, "periodic-structure-panel", "1.0.0"),
-        (__import__("periodic_shared.elements", fromlist=["x"]), "periodic-elements", "1.0.0"),
+        (cm, "periodic-cell-model", "1.1.0"),
+        (sp, "periodic-structure-panel", "1.1.0"),
+        (__import__("periodic_shared.elements", fromlist=["x"]), "periodic-elements", "1.1.0"),
     ],
 )
 def test_shared_module_identity(module, name, version):
@@ -405,7 +405,7 @@ def test_changing_the_padding_redraws_the_molecule_box(qapp):
 def test_bonds_are_automatic_by_default(qapp):
     """A whole molecule gets bonds; the same atoms as a crystal do not."""
     pytest.importorskip("rdkit")
-    from PyQt6.QtCore import Qt
+    from PySide6.QtCore import Qt
 
     context = _RecordingContext()
     panel = sp.StructurePanel(get_molecule=lambda: _FakeMol(
@@ -573,7 +573,7 @@ def test_per_axis_padding_is_used_when_switched_on(panel):
 
 def test_preview_button_reports_a_failure(panel, monkeypatch):
     """A click that cannot draw must say why rather than do nothing."""
-    from PyQt6.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QMessageBox
 
     seen = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: seen.append(a))
@@ -668,7 +668,7 @@ def test_lookup_survives_a_hostile_registry(qapp):
 
 
 def test_lookup_falls_back_to_a_widget_scan(qapp):
-    from PyQt6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QWidget
 
     host = QWidget()
 

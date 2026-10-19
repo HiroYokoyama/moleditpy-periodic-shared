@@ -62,4 +62,8 @@ hand in a plugin fails that plugin's own CI.
 
 ## Licence
 
-GPL-3.0, matching the plugins.
+LGPL-3.0-or-later, matching the plugins.
+
+## Licensing scope
+
+First-party code in this migration is LGPL-3.0-or-later. See [LICENSE](LICENSE), [COPYING](COPYING) and [dependency/provenance terms](LICENSING.md). Third-party components and historical releases retain their own terms.

@@ -16,10 +16,10 @@ import os
 from html import escape
 
 SHARED_MODULE_NAME = "periodic-structure-panel"
-SHARED_MODULE_VERSION = "1.0.0"
+SHARED_MODULE_VERSION = "1.1.0"
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -116,8 +116,8 @@ def dropped_cif_path(mime) -> str:
 class StructurePanel(QWidget):
     """Source selector + cell builder.  Emits ``changed`` on every edit."""
 
-    changed = pyqtSignal()
-    previewed = pyqtSignal()
+    changed = Signal()
+    previewed = Signal()
 
     def __init__(self, get_molecule=None, get_cif_viewer=None, parent=None, context=None):
         super().__init__(parent)

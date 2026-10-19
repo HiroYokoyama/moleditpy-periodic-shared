@@ -56,7 +56,7 @@ listed in each plugin's `.gitignore` and are overwritten on every
 
 `cell_model` imports `elements` for the element table and covalent radii, so
 those two always travel together. `cell_preview` imports RDKit and drives the
-host's PyVista plotter, and `structure_panel` imports PyQt6 — all inside
+host's PyVista plotter, and `structure_panel` imports PySide6 — all inside
 functions where possible, so a plugin's declared dependencies stay honest.
 
 The Slab Builder has its own dialog and does not use `structure_panel.py`;
@@ -69,7 +69,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=periodic_shared --cov-report=term-missing
 ```
 
-Real PyQt6 and RDKit, offscreen via `QT_QPA_PLATFORM`. RDKit-dependent tests use
+Real PySide6 and RDKit, offscreen via `QT_QPA_PLATFORM`. RDKit-dependent tests use
 `pytest.importorskip("rdkit")` so the suite still runs without it.
 
 ## Conventions
