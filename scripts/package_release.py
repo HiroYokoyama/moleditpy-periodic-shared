@@ -21,7 +21,7 @@ def build_release(tag: str, root: Path = ROOT) -> Path:
     destination = root / "dist" / f"periodic-shared-{tag}.zip"
     destination.parent.mkdir(exist_ok=True)
     with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
-        for path in modules + [root / "VERSION", root / "LICENSE", root / "README.md"]:
+        for path in modules + [root / "VERSION", root / "LICENSE", root / "COPYING", root / "LICENSING.md", root / "README.md"]:
             archive.write(path, path.relative_to(root))
     return destination
 

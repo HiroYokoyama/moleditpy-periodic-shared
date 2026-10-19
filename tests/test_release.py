@@ -21,13 +21,13 @@ def test_release_archive(tmp_path):
     import shutil
 
     shutil.copytree(ROOT / "periodic_shared", tmp_path / "periodic_shared")
-    for filename in ("VERSION", "LICENSE", "README.md"):
+    for filename in ("VERSION", "LICENSE", "COPYING", "LICENSING.md", "README.md"):
         shutil.copyfile(ROOT / filename, tmp_path / filename)
     archive = build_release("v1.1.0", tmp_path)
     with ZipFile(archive) as package:
         assert set(package.namelist()) == {
             "periodic_shared/__init__.py", *(f"periodic_shared/{name}.py" for name in MODULES),
-            "VERSION", "LICENSE", "README.md",
+            "VERSION", "LICENSE", "COPYING", "LICENSING.md", "README.md",
         }
     with pytest.raises(ValueError, match="tag"):
         build_release("v2.0.0", tmp_path)
