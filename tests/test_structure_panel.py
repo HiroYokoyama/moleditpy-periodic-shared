@@ -538,7 +538,7 @@ def test_dropping_a_cif_switches_the_source_over(panel, tmp_path):
     panel.dropEvent(event)
     assert event.accepted
     assert panel.source_combo.currentText() == sp.SOURCE_CIF
-    assert panel.cif_edit.text() == path.as_posix()
+    assert panel.cif_edit.text() == str(path)
 
 
 def test_a_drag_without_a_cif_is_refused(panel):
