@@ -16,7 +16,7 @@ import os
 from html import escape
 
 SHARED_MODULE_NAME = "periodic-structure-panel"
-SHARED_MODULE_VERSION = "1.1.0"
+SHARED_MODULE_VERSION = "1.1.1"
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -111,6 +111,21 @@ def dropped_cif_path(mime) -> str:
         if path and os.path.splitext(path)[1].lower() in CIF_SUFFIXES:
             return path
     return ""
+
+
+def accept_drop_as_copy(event) -> bool:
+    """Accept a file drag as a copy. False, and refused, if the source cannot copy.
+
+    Never acceptProposedAction(): Shift during a drag from Explorer proposes a
+    move, and accepting one tells Explorer the file now lives here, so it removes
+    the original. A dropped file is only ever read.
+    """
+    if not event.possibleActions() & Qt.DropAction.CopyAction:
+        event.ignore()
+        return False
+    event.setDropAction(Qt.DropAction.CopyAction)
+    event.accept()
+    return True
 
 
 class StructurePanel(QWidget):
@@ -415,7 +430,7 @@ class StructurePanel(QWidget):
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Drops land on this panel only, not on the whole dialog."""
         if dropped_cif_path(event.mimeData()):
-            event.acceptProposedAction()
+            accept_drop_as_copy(event)
         else:
             event.ignore()
 
@@ -427,8 +442,8 @@ class StructurePanel(QWidget):
         if not path:
             event.ignore()
             return
-        self.load_cif_path(path)
-        event.acceptProposedAction()
+        if accept_drop_as_copy(event):
+            self.load_cif_path(path)
 
     # -- 3D preview -------------------------------------------------------
 

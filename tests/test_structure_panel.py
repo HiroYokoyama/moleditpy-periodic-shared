@@ -8,6 +8,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from PySide6.QtCore import Qt  # noqa: E402
+
 from periodic_shared import cell_model as cm  # noqa: E402
 from periodic_shared import structure_panel as sp  # noqa: E402
 
@@ -20,9 +22,9 @@ from test_cell_model import CUBIC_CIF, _FakeMol  # noqa: E402
 @pytest.mark.parametrize(
     "module,name,version",
     [
-        (cm, "periodic-cell-model", "1.1.0"),
-        (sp, "periodic-structure-panel", "1.1.0"),
-        (__import__("periodic_shared.elements", fromlist=["x"]), "periodic-elements", "1.1.0"),
+        (cm, "periodic-cell-model", "1.1.1"),
+        (sp, "periodic-structure-panel", "1.1.1"),
+        (__import__("periodic_shared.elements", fromlist=["x"]), "periodic-elements", "1.1.1"),
     ],
 )
 def test_shared_module_identity(module, name, version):
@@ -503,7 +505,13 @@ class _FakeDropEvent:
     def mimeData(self):
         return self._mime
 
-    def acceptProposedAction(self):
+    def possibleActions(self):
+        return Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
+
+    def setDropAction(self, action):
+        self.action = action
+
+    def accept(self):
         self.accepted = True
 
     def ignore(self):
@@ -757,3 +765,54 @@ def test_no_template_without_a_molecule_getter(qapp):
     panel = sp.StructurePanel()
     assert panel.source_template(None) is None
     panel.deleteLater()
+
+
+COPY_OR_MOVE = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
+
+
+def _shift_event(kind, path, actions=COPY_OR_MOVE):
+    """A real Qt event with Shift held, the way Explorer asks for a move."""
+    from PySide6.QtCore import QMimeData, QPoint, QPointF, QUrl
+    from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    left, shift = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier
+    if kind == "drop":
+        event = QDropEvent(QPointF(1, 1), actions, mime, left, shift)
+    elif kind == "move":
+        event = QDragMoveEvent(QPoint(1, 1), actions, mime, left, shift)
+    else:
+        event = QDragEnterEvent(QPoint(1, 1), actions, mime, left, shift)
+    # The event does not own its mime data, which has to outlive it.
+    event.keepalive = mime
+    return event
+
+
+def test_a_shift_drag_really_does_propose_a_move(tmp_path):
+    # Without this the tests below would pass for the wrong reason.
+    assert _shift_event("drop", tmp_path / "x.cif").proposedAction() == Qt.DropAction.MoveAction
+
+
+def test_a_shift_drag_is_shown_as_a_copy(panel, tmp_path):
+    for kind, handler in (("enter", panel.dragEnterEvent), ("move", panel.dragMoveEvent)):
+        event = _shift_event(kind, tmp_path / "x.cif")
+        handler(event)
+        assert event.isAccepted()
+        assert event.dropAction() == Qt.DropAction.CopyAction
+
+
+def test_a_shift_drop_is_a_copy_not_a_move(panel, tmp_path):
+    path = tmp_path / "x.cif"
+    event = _shift_event("drop", path)
+    panel.dropEvent(event)
+    assert event.isAccepted()
+    assert event.dropAction() == Qt.DropAction.CopyAction
+    assert panel.cif_edit.text() == path.as_posix()
+
+
+def test_a_source_that_can_only_move_is_refused(panel, tmp_path):
+    event = _shift_event("drop", tmp_path / "x.cif", actions=Qt.DropAction.MoveAction)
+    panel.dropEvent(event)
+    assert not event.isAccepted()
+    assert panel.cif_edit.text() == ""
